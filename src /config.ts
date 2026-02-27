@@ -1,0 +1,4 @@
+export const CONFIG = {
+  LIFF_ID: "YOUR_LIFF_ID", 
+  GAS_WEBAPP_URL: "YOUR_GAS_WEBAPP_URL", 
+};
