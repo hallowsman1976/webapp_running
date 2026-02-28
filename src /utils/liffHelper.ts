@@ -217,3 +217,158 @@ function showFallbackSpinner(show: boolean): void {
     el.style.display = 'none';
   }
 }
+// เพิ่มเติมใน liffHelper.ts (ต่อจากที่มีอยู่ใน Phase 3)
+// section: Android LIFF session reset + state recovery
+
+export const AndroidWorkaround = {
+
+  // ─────────────────────────────────────────────────────────
+  // Session State Management
+  // ─────────────────────────────────────────────────────────
+
+  SESSION_KEY: 'liff_session_v1',
+
+  saveSession(userId: string): void {
+    try {
+      sessionStorage.setItem(this.SESSION_KEY, JSON.stringify({
+        userId,
+        timestamp: Date.now(),
+        userAgent: navigator.userAgent
+      }));
+    } catch {}
+  },
+
+  getSession(): { userId: string; timestamp: number } | null {
+    try {
+      const raw = sessionStorage.getItem(this.SESSION_KEY);
+      return raw ? JSON.parse(raw) : null;
+    } catch { return null; }
+  },
+
+  clearSession(): void {
+    try { sessionStorage.removeItem(this.SESSION_KEY); } catch {}
+  },
+
+  // ─────────────────────────────────────────────────────────
+  // ตรวจสอบ Android LINE WebView
+  // ─────────────────────────────────────────────────────────
+  isAndroidLineWebView(): boolean {
+    const ua = navigator.userAgent.toLowerCase();
+    return ua.includes('android') && ua.includes('line/');
+  },
+
+  isIosLineWebView(): boolean {
+    const ua = navigator.userAgent.toLowerCase();
+    return (ua.includes('iphone') || ua.includes('ipad')) && ua.includes('line/');
+  },
+
+  // ─────────────────────────────────────────────────────────
+  // Android: ตรวจจับ "เปิดรอบสองค้าง" pattern
+  // ─────────────────────────────────────────────────────────
+  detectStaleSession(): boolean {
+    const session = this.getSession();
+    if (!session) return false;
+
+    const AGE_LIMIT = 30 * 60 * 1000; // 30 นาที
+    const age = Date.now() - session.timestamp;
+
+    if (age > AGE_LIMIT) {
+      console.log('[AndroidWorkaround] Session too old, clearing');
+      this.clearSession();
+      return true;
+    }
+    return false;
+  },
+
+  // ─────────────────────────────────────────────────────────
+  // Safe LIFF Re-init (ใช้ใน visibilitychange)
+  // ─────────────────────────────────────────────────────────
+  async safeReinit(): Promise<boolean> {
+    if (!this.isAndroidLineWebView()) return true;
+
+    console.log('[AndroidWorkaround] Performing safe re-init check...');
+
+    try {
+      // ตรวจสอบ token ยังใช้ได้
+      const liff = (await import('@line/liff')).default;
+      const token = liff.getIDToken();
+
+      if (!token) {
+        console.warn('[AndroidWorkaround] No token, triggering safe reload');
+        this.safeReload();
+        return false;
+      }
+
+      return true;
+
+    } catch (err) {
+      console.error('[AndroidWorkaround] Re-init check failed:', err);
+      this.safeReload();
+      return false;
+    }
+  },
+
+  // ─────────────────────────────────────────────────────────
+  // Safe Reload (เพิ่ม cache-bust + clear state)
+  // ─────────────────────────────────────────────────────────
+  safeReload(reason = 'unknown'): void {
+    console.log(`[AndroidWorkaround] Safe reload triggered: ${reason}`);
+
+    // Clear stale LIFF state
+    try {
+      const keys = ['LIFF_STORE', 'liff_store', 'liff_oauth_state'];
+      keys.forEach(k => {
+        try { localStorage.removeItem(k); } catch {}
+        try { sessionStorage.removeItem(k); } catch {}
+      });
+    } catch {}
+
+    // Cache-bust reload
+    const url = new URL(window.location.href);
+    url.searchParams.delete('_r');
+    url.searchParams.set('_r', Date.now().toString());
+
+    // รอ 100ms ก่อน reload เพื่อให้ cleanup เสร็จ
+    setTimeout(() => {
+      window.location.replace(url.toString());
+    }, 100);
+  },
+
+  // ─────────────────────────────────────────────────────────
+  // Install global error handler สำหรับ LIFF errors
+  // ─────────────────────────────────────────────────────────
+  installErrorHandler(): void {
+    window.addEventListener('unhandledrejection', (event) => {
+      const reason = event.reason;
+      const msg    = reason?.message || String(reason);
+
+      // LIFF specific errors ที่ควร reload
+      const RELOAD_ERRORS = [
+        'LIFF_NOT_INIT',
+        'NOT_IN_LINE',
+        'INVALID_ARGUMENT',
+        'auth token expired'
+      ];
+
+      if (RELOAD_ERRORS.some(e => msg.includes(e))) {
+        console.warn('[AndroidWorkaround] Caught LIFF error, reloading:', msg);
+        event.preventDefault();
+        this.safeReload(msg);
+      }
+    });
+
+    // beforeunload: cleanup camera/scanner
+    window.addEventListener('beforeunload', () => {
+      // Scanner cleanup จะถูก trigger โดย visibilitychange แล้ว
+      console.log('[AndroidWorkaround] Page unloading');
+    });
+
+    // pageshow: detect back/forward cache (bfcache) บน iOS
+    window.addEventListener('pageshow', (event) => {
+      if (event.persisted) {
+        console.log('[AndroidWorkaround] Page restored from bfcache, reloading');
+        this.safeReload('bfcache');
+      }
+    });
+  }
+};
