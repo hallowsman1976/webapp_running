@@ -1,26 +1,23 @@
 {
-  "name": "runner-liff-app",
-  "private": true,
+  "name": "runner-event-liff",
   "version": "1.0.0",
-  "type": "module",
+  "private": true,
   "scripts": {
     "dev": "vite",
     "build": "tsc && vite build",
     "preview": "vite preview",
-    "copy-html": "copyfiles -u 1 \"dist/index.html\" gas/",
-    "deploy": "npm run build && npm run copy-html && cd gas && clasp push"
+    "type-check": "tsc --noEmit"
   },
   "dependencies": {
-    "@line/liff": "^2.23.1",
-    "sweetalert2": "^11.10.0"
+    "@line/liff": "^2.22.3",
+    "jsqr": "^1.4.0"
   },
   "devDependencies": {
-    "copyfiles": "^2.4.1",
-    "typescript": "^5.2.2",
-    "vite": "^5.0.0",
-    "vite-plugin-singlefile": "^0.20.1",
-    "tailwindcss": "^3.4.0",
-    "postcss": "^8.4.0",
-    "autoprefixer": "^10.4.0"
+    "typescript": "^5.3.3",
+    "vite": "^5.0.12",
+    "tailwindcss": "^3.4.1",
+    "autoprefixer": "^10.4.17",
+    "postcss": "^8.4.33",
+    "@types/node": "^20.11.5"
   }
 }
