@@ -1,50 +1,181 @@
-import { CONFIG } from './config';
-import { callApi } from './api';
+// src/main.ts
+// Bootstrap: LIFF init + Router
+
+import { LiffHelper } from './utils/liffHelper';
 import { Store } from './store';
-import { renderApp } from './pages/RunnerApp';
-import { renderAdminApp } from './pages/AdminApp';
+import { Api } from './api';
+import { Toast } from './components/toast';
+import { renderConsent } from './pages/consent';
+import { renderEvents } from './pages/events';
+import { renderEventDetail } from './pages/eventDetail';
+import { renderRegister } from './pages/register';
+import { renderBibCard } from './pages/bibCard';
+import { renderMyRegistrations } from './pages/myRegistrations';
+import type { PdpaStatus, User } from './types';
 
-let isInitialized = false;
-
-async function initializeApp() {
-  if (isInitialized) return;
+// ─────────────────────────────────────────────────────────────
+// Bootstrap
+// ─────────────────────────────────────────────────────────────
+async function bootstrap(): Promise<void> {
   try {
-    await window.liff.init({ liffId: CONFIG.LIFF_ID });
-    isInitialized = true;
+    // 1. Init LIFF (พร้อม Android workaround)
+    const profile = await LiffHelper.init();
 
-    if (!window.liff.isLoggedIn()) { window.liff.login(); return; }
+    // 2. Save idToken in-memory (never localStorage)
+    Store.setState({
+      liffProfile: profile,
+      lineToken:   LiffHelper.getIdToken()
+    });
 
-    const profile = await window.liff.getProfile();
-    const loginResult = await callApi('login', { ...profile });
+    // 3. Sync profile → GAS
+    const syncRes = await Api.syncProfile({
+      displayName: profile.displayName,
+      pictureUrl:  profile.pictureUrl
+    });
 
-    Store.user = { ...profile, ...loginResult.user, needConsent: loginResult.needConsent };
+    if (!syncRes.success) {
+      throw new Error(syncRes.error || 'ไม่สามารถเชื่อมต่อเซิร์ฟเวอร์ได้');
+    }
 
-    // [Android Workaround] คืนค่า State ถ้าเพิ่งสแกน QR 
-    if (sessionStorage.getItem('returnToAdmin') === 'true') {
-      sessionStorage.removeItem('returnToAdmin');
-      Store.currentPage = 'admin';
-      renderAdminApp();
+    // 4. Check banned
+    const userData = syncRes.data as User;
+    if ((userData as any)?.status === 'banned') {
+      showError('บัญชีถูกระงับการใช้งาน กรุณาติดต่อผู้จัดงาน');
       return;
     }
 
-    if (Store.user.role === 'admin') {
-      Store.currentPage = 'admin';
-      renderAdminApp();
-    } else if (Store.user.needConsent) {
-      Store.currentPage = 'pdpa';
-      renderApp();
+    Store.setState({ user: userData });
+
+    // 5. Check PDPA
+    const pdpaRes = await Api.getPdpaStatus(profile.userId);
+    const pdpaStatus = pdpaRes.data as PdpaStatus;
+    Store.setState({ pdpaStatus });
+
+    if (pdpaStatus?.needReconsent) {
+      Store.setRoute('consent');
     } else {
-      Store.currentPage = 'events';
-      Store.events = await callApi('getEvents');
-      renderApp();
+      // 6. Check URL params for deep link
+      const urlParams = new URLSearchParams(window.location.search);
+      const page      = urlParams.get('page');
+      const regId     = urlParams.get('regId');
+      const eventId   = urlParams.get('eventId');
+
+      if (page === 'bib' && regId) {
+        Store.setRoute('bib-card', { registrationId: regId });
+      } else if (page === 'event' && eventId) {
+        Store.setRoute('event-detail', { eventId });
+      } else if (page === 'checkin') {
+        Store.setRoute('checkin');
+      } else {
+        Store.setRoute('events');
+      }
     }
+
+    // 7. Hide initial loader + show app
+    hideInitialLoader();
+
+    // 8. Start router
+    render();
+
   } catch (err) {
-    document.getElementById('app')!.innerHTML = `<p class="p-4 text-red-500">Failed to init app</p>`;
+    console.error('[Bootstrap]', err);
+    showError((err as Error).message);
   }
 }
 
-document.addEventListener('visibilitychange', () => {
-  if (document.visibilityState === 'visible' && !isInitialized) initializeApp();
+// ─────────────────────────────────────────────────────────────
+// Router
+// ─────────────────────────────────────────────────────────────
+function render(): void {
+  const { currentRoute } = Store.getState();
+  const { name, params } = currentRoute;
+
+  console.log('[Router]', name, params);
+
+  switch (name) {
+    case 'consent':
+      renderConsent(Store.getState().pdpaStatus!);
+      break;
+
+    case 'events':
+      renderEvents();
+      break;
+
+    case 'event-detail':
+      renderEventDetail(params.eventId);
+      break;
+
+    case 'register':
+      renderRegister(params.eventId, params.distanceId);
+      break;
+
+    case 'bib-card':
+      renderBibCard(params.registrationId);
+      break;
+
+    case 'my-registrations':
+      renderMyRegistrations();
+      break;
+
+    case 'checkin':
+      // Phase 5 จะ implement QR Scanner
+      import('./pages/checkin').then(m => m.renderCheckin(params));
+      break;
+
+    case 'admin-dashboard':
+    case 'admin-events':
+    case 'admin-registrations':
+    case 'admin-checkin':
+    case 'admin-qr-print':
+      // Phase 4 Admin pages
+      import('./pages/admin/adminLayout').then(m => m.renderAdmin(name, params));
+      break;
+
+    case 'error':
+      showError(params.message || 'เกิดข้อผิดพลาด');
+      break;
+
+    default:
+      renderEvents();
+  }
+}
+
+// ─────────────────────────────────────────────────────────────
+// Subscribe to route changes
+// ─────────────────────────────────────────────────────────────
+window.addEventListener('route-change', () => {
+  render();
 });
 
-initializeApp();
+// ─────────────────────────────────────────────────────────────
+// Helpers
+// ─────────────────────────────────────────────────────────────
+function hideInitialLoader(): void {
+  const loader = document.getElementById('initial-loader');
+  const app    = document.getElementById('app');
+  if (loader) loader.style.display = 'none';
+  if (app)    app.style.display    = 'block';
+}
+
+function showError(message: string): void {
+  hideInitialLoader();
+  const app = document.getElementById('app')!;
+  app.style.display = 'block';
+  app.innerHTML = `
+    <div class="min-h-screen bg-runner-primary flex flex-col
+                items-center justify-center px-6 text-center">
+      <span class="text-6xl mb-6">⚠️</span>
+      <h2 class="text-white text-xl font-bold mb-3">เกิดข้อผิดพลาด</h2>
+      <p class="text-white/60 text-sm leading-relaxed mb-8">${message}</p>
+      <button onclick="window.location.reload()"
+        class="px-8 py-3 bg-white text-runner-primary font-bold
+               rounded-2xl active:scale-95 transition-transform">
+        ลองใหม่อีกครั้ง
+      </button>
+    </div>`;
+}
+
+// ─────────────────────────────────────────────────────────────
+// Start
+// ─────────────────────────────────────────────────────────────
+bootstrap();
