@@ -18,8 +18,28 @@ import type { PdpaStatus, User } from './types';
 // ─────────────────────────────────────────────────────────────
 async function bootstrap(): Promise<void> {
   try {
+    // เพิ่มใน bootstrap() function ใน main.ts
+// วางก่อน LiffHelper.init()
+
+import { AndroidWorkaround } from './utils/liffHelper';
+
+async function bootstrap(): Promise<void> {
+  try {
+    // ── 0. Install Android workaround handlers ────────────
+    AndroidWorkaround.installErrorHandler();
+
+    // ตรวจสอบ stale session (Android เปิดรอบสอง)
+    if (AndroidWorkaround.isAndroidLineWebView()) {
+      console.log('[Bootstrap] Android LINE WebView detected');
+
+      if (AndroidWorkaround.detectStaleSession()) {
+        console.log('[Bootstrap] Stale session detected, proceeding with fresh init');
+      }
+    }
     // 1. Init LIFF (พร้อม Android workaround)
     const profile = await LiffHelper.init();
+    // ── Save session (Android tracking) ──────────────────
+    AndroidWorkaround.saveSession(profile.userId);
 
     // 2. Save idToken in-memory (never localStorage)
     Store.setState({
